@@ -49,9 +49,16 @@ type BMSValue = CommonValue | Literal[
     "balance_current",
     "pack_count",
     "problem_code",
+    "rated_capacity",
+    "chrg_voltage_limit",
+    "chrg_current_limit",
+    "dischrg_voltage_limit",
+    "dischrg_current_limit",
     "chrg_mosfet",
     "dischrg_mosfet",
+    "precharge_mosfet",
     "heater",
+    "fan",
 ]
 
 type BMSpackvalue = CommonValue
@@ -148,11 +155,21 @@ class BMSSample(BatterySample, total=False):
     total_charge: int  # [Ah], overall discharged
     pack_count: int  # [#]
     problem_code: int  # BMS specific code, 0 no problem, max. 64 bit
+    rated_capacity: int  # [Ah], nameplate rating; `design_capacity` is the
+    # capacity the BMS references its state of charge to (may differ, e.g. learned)
+
+    # BMS operating limits (as reported by the BMS, not measured values)
+    chrg_voltage_limit: float  # [V], maximum charge voltage
+    chrg_current_limit: float  # [A], maximum charge current
+    dischrg_voltage_limit: float  # [V], minimum discharge voltage
+    dischrg_current_limit: float  # [A], maximum discharge current
 
     # BMS switches
     chrg_mosfet: bool  # True: enabled
     dischrg_mosfet: bool  # True: enabled
+    precharge_mosfet: bool  # True: enabled
     heater: bool  # True: enabled/heating
+    fan: bool  # True: enabled/running
 
     # battery pack data
     packs: list[PackSample]  # data from battery sub-systems
