@@ -263,22 +263,6 @@
   },
   {
     "advertisement": {
-      "local_name": "ECO-LFP48100-3U-8EC7",
-      "manufacturer_data": {
-        "49834": "37018ec700014c03"
-      },
-      "service_uuids": ["0000ff00-0000-1000-8000-00805f9b34fb"],
-      "rssi": -70,
-      "platform_data": ["AA:C2:37:00:00:00"]
-    },
-    "type": "jbd_bms",
-    "_comments": [
-      "source advmon (https://github.com/patman15/BMS_BLE-HA/issues/284)",
-      "MAC address correct"
-    ]
-  },
-  {
-    "advertisement": {
       "local_name": "OGR-48100-123456789",
       "manufacturer_data": {
         "13880": "13014e9a"

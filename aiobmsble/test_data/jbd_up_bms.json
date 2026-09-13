@@ -1,0 +1,42 @@
+[
+  {
+    "advertisement": {
+      "local_name": "ECO-LFP4850-3U-000000",
+      "manufacturer_data": {
+        "49834": "3700000000015a07"
+      },
+      "service_uuids": [
+        "0000ff00-0000-1000-8000-00805f9b34fb"
+      ],
+      "rssi": -62,
+      "platform_data": [
+        "AA:C2:37:00:00:00"
+      ]
+    },
+    "type": "jbd_up_bms",
+    "_comments": [
+      "source bleak scan on ECO-WORTHY ECO-LFP4850-3U (JBD UP16S, fw 12.4)",
+      "MAC tail masked in address, local name and manufacturer data; OUI correct"
+    ]
+  },
+  {
+    "advertisement": {
+      "local_name": "ECO-LFP48100-3U-8EC7",
+      "manufacturer_data": {
+        "49834": "37018ec700014c03"
+      },
+      "service_uuids": [
+        "0000ff00-0000-1000-8000-00805f9b34fb"
+      ],
+      "rssi": -70,
+      "platform_data": [
+        "AA:C2:37:00:00:00"
+      ]
+    },
+    "type": "jbd_up_bms",
+    "_comments": [
+      "source advmon (https://github.com/patman15/BMS_BLE-HA/issues/284)",
+      "MAC address correct"
+    ]
+  }
+]
