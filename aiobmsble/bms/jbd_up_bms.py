@@ -121,12 +121,18 @@ class BMS(BaseBMS):
         self, _sender: BleakGATTCharacteristic, data: bytearray
     ) -> None:
         """Handle the RX characteristics notify event (new data arrives)."""
-        if (
-            data.startswith(BMS._ADDR.to_bytes(1) + BMS._FCT_READ.to_bytes(1))
-            and len(self._frame) >= BMS._HEAD_LEN
-            and len(self._frame) >= BMS._frame_len(self._frame)
+        head: Final[bytes] = self._exp_head()
+        if data.startswith(head) and (
+            len(self._frame) < BMS._HEAD_LEN
+            or len(self._frame) >= BMS._frame_len(self._frame)
         ):
-            self._frame.clear()  # a new response starts, drop the completed one
+            # a reply start supersedes leftovers, unless a reply is still being
+            # assembled (a payload chunk may coincidentally look like a start)
+            self._frame.clear()
+
+        if len(self._frame) + len(data) > self._frame.maxlen:
+            self._log.debug("frame buffer overflow, discarding %s", self._frame)
+            self._frame.clear()  # cannot be a valid reply, keep the incoming chunk
 
         self._frame.extend(data)
         self._log.debug(
@@ -136,11 +142,25 @@ class BMS(BaseBMS):
         if len(self._frame) < BMS._HEAD_LEN:
             return  # length field not received yet
 
+        if bytes(self._frame[: len(head)]) != head:
+            self._log.debug(
+                "unexpected response (block 0x%X)",
+                int.from_bytes(self._frame[2:4], "big"),
+            )
+            self._frame.clear()  # cannot become the awaited reply, discard
+            return
+
+        if BMS._frame_len(self._frame) > self._frame.maxlen:
+            self._log.debug("implausible frame length: %s", self._frame)
+            self._frame.clear()
+            return
+
         if len(self._frame) < BMS._frame_len(self._frame):
             return  # response is not complete yet
 
         if len(self._frame) != BMS._frame_len(self._frame):
             self._log.debug("wrong data length (%i): %s", len(self._frame), self._frame)
+            self._frame.clear()
             return
 
         if not self._check_integrity(
@@ -150,21 +170,24 @@ class BMS(BaseBMS):
             slice(-BMS._CRC_LEN, None),
             "little",
         ):
-            return
-
-        if int.from_bytes(self._frame[2:4], "big") != self._exp_block:
-            self._log.debug(
-                "unexpected response (block 0x%X)",
-                int.from_bytes(self._frame[2:4], "big"),
-            )
+            self._frame.clear()
             return
 
         self._msg = bytes(self._frame)
         self._msg_event.set()
 
+    def _exp_head(self) -> bytes:
+        """Return the header a reply to the pending request has to start with."""
+        return (
+            BMS._ADDR.to_bytes(1)
+            + BMS._FCT_READ.to_bytes(1)
+            + self._exp_block.to_bytes(2, "big")
+        )
+
     async def _await_block(self, block: tuple[int, int]) -> bytes:
         """Request a register block and return its payload."""
         self._exp_block = block[0]
+        self._frame.clear()  # never let a stale partial reply block this request
         try:
             await self._await_msg(BMS._cmd(block))
         finally:

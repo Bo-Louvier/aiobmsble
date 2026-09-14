@@ -277,8 +277,9 @@ async def test_invalid_response(patch_bleak_client, patch_bms_timeout) -> None:
         _frame(_STATUS_RSP[8:-2], (0x2000, 0x2050)),  # unrequested block
         _STATUS_RSP + b"\x00",  # oversized frame
         _STATUS_RSP[:4],  # frame shorter than the header
+        _STATUS_RSP[:6] + b"\xff\xff" + _STATUS_RSP[8:],  # length exceeds buffer
     ],
-    ids=["invalid_crc", "wrong_block", "oversized", "no_length"],
+    ids=["invalid_crc", "wrong_block", "oversized", "no_length", "huge_length"],
 )
 async def test_invalid_frame(
     patch_bleak_client, patch_bms_timeout, wrong_response: bytes
@@ -296,4 +297,107 @@ async def test_invalid_frame(
     bms = BMS(generate_ble_device())
     with pytest.raises(TimeoutError):
         await bms.async_update()
+    await bms.disconnect()
+
+
+async def test_stale_partial_frame(patch_bleak_client, patch_bms_timeout) -> None:
+    """Test that a truncated reply left behind by a timeout does not block later requests."""
+    patch_bms_timeout("jbd_up_bms")
+
+    class MockTruncatedIdentClient(MockJBDUPBleakClient):
+        """Emulate a BMS whose identity reply breaks off before the length field."""
+
+        RESP: dict[int, bytes] = {
+            BMS._STATUS[0]: _STATUS_RSP,
+            BMS._IDENT[0]: _IDENT_RSP[: BMS._HEAD_LEN - 3],
+        }
+
+    patch_bleak_client(MockTruncatedIdentClient)
+
+    bms = BMS(generate_ble_device())
+    assert await bms.async_update() == _RESULT_DEFS
+    # connection stays open, so the partial identity reply remains in the buffer
+    assert await bms.device_info() == {"sw_version": "12.4"}
+    assert await bms.async_update() == _RESULT_DEFS
+    await bms.disconnect()
+
+
+async def test_payload_looks_like_frame_start(patch_bleak_client) -> None:
+    """Test that a payload chunk starting with the reply header does not drop the reply."""
+    # design/rated capacity words equal to the expected header, right at a chunk boundary
+    payload: Final[bytearray] = bytearray(_STATUS_RSP[8:-2])
+    payload[12:16] = b"\x01\x78\x10\x00"
+    assert BT_FRAME_SIZE == 20  # chunk 2 starts at payload offset 12
+
+    class MockHeaderInPayloadClient(MockJBDUPBleakClient):
+        """Emulate a BMS whose status payload contains the reply header bytes."""
+
+        RESP: dict[int, bytes] = {BMS._STATUS[0]: _frame(bytes(payload))}
+
+    patch_bleak_client(MockHeaderInPayloadClient)
+
+    bms = BMS(generate_ble_device())
+    assert await bms.async_update() == _RESULT_DEFS | {
+        "design_capacity": 4,  # 0x0178 = 3.76 Ah
+        "rated_capacity": 41,  # 0x1000 = 40.96 Ah
+    }
+    await bms.disconnect()
+
+
+@pytest.mark.parametrize("partial_len", [7, 20], ids=["below_header", "with_header"])
+async def test_partial_first_attempt(
+    patch_bleak_client, patch_bms_timeout, partial_len: int
+) -> None:
+    """Test that a reply cut short on the first attempt does not block the retries."""
+    patch_bms_timeout("jbd_up_bms")
+
+    class MockPartialFirstClient(MockJBDUPBleakClient):
+        """Emulate a BMS that truncates the very first status reply."""
+
+        RESP: dict[int, bytes] = {BMS._STATUS[0]: _STATUS_RSP}
+        _requests: int = 0
+
+        def _response(
+            self,
+            char_specifier: BleakGATTCharacteristic | int | str | UUID,
+            data: Buffer,
+        ) -> bytes:
+            resp: Final[bytes] = super()._response(char_specifier, data)
+            MockPartialFirstClient._requests += 1
+            return resp[:partial_len] if MockPartialFirstClient._requests == 1 else resp
+
+    patch_bleak_client(MockPartialFirstClient)
+
+    bms = BMS(generate_ble_device())
+    assert await bms.async_update() == _RESULT_DEFS
+    assert MockPartialFirstClient._requests > 1
+    await bms.disconnect()
+
+
+async def test_buffer_overflow_recovery(patch_bleak_client, patch_bms_timeout) -> None:
+    """Test that a reply filling the buffer after a stale partial cannot overflow it."""
+    patch_bms_timeout("jbd_up_bms")
+    # largest reply the buffer can hold; a stale header in front of it would overflow
+    big: Final[bytes] = _frame(bytes(1014))
+
+    class MockOverflowClient(MockJBDUPBleakClient):
+        """Emulate a BMS that first sends only a header, then a buffer sized reply."""
+
+        RESP: dict[int, bytes] = {BMS._STATUS[0]: big}
+        _requests: int = 0
+
+        def _response(
+            self,
+            char_specifier: BleakGATTCharacteristic | int | str | UUID,
+            data: Buffer,
+        ) -> bytes:
+            resp: Final[bytes] = super()._response(char_specifier, data)
+            MockOverflowClient._requests += 1
+            return resp[: BMS._HEAD_LEN] if MockOverflowClient._requests == 1 else resp
+
+    patch_bleak_client(MockOverflowClient)
+
+    bms = BMS(generate_ble_device())
+    assert (await bms.async_update()).get("voltage") == 0
+    assert MockOverflowClient._requests > 1
     await bms.disconnect()
