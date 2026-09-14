@@ -70,7 +70,7 @@ class BMS(BaseBMS):
     ) -> None:
         """Initialize private BMS members."""
         super().__init__(ble_device, config, logger_name)
-        self._exp_block: int = 0x0000
+        self._exp_block: tuple[int, int] = (0x0000, 0x0000)
         self._msg: bytes = b""
 
     @staticmethod
@@ -122,12 +122,9 @@ class BMS(BaseBMS):
     ) -> None:
         """Handle the RX characteristics notify event (new data arrives)."""
         head: Final[bytes] = self._exp_head()
-        if data.startswith(head) and (
-            len(self._frame) < BMS._HEAD_LEN
-            or len(self._frame) >= BMS._frame_len(self._frame)
-        ):
-            # a reply start supersedes leftovers, unless a reply is still being
-            # assembled (a payload chunk may coincidentally look like a start)
+        if data.startswith(head):
+            # a reply start supersedes whatever is left in the buffer, typically a
+            # reply that lost its final chunk before the request was retried
             self._frame.clear()
 
         if len(self._frame) + len(data) > self._frame.maxlen:
@@ -177,21 +174,27 @@ class BMS(BaseBMS):
         self._msg_event.set()
 
     def _exp_head(self) -> bytes:
-        """Return the header a reply to the pending request has to start with."""
+        """Return the header a reply to the pending request has to start with.
+
+        A reply echoes address, function code, start and end address of the request.
+        Matching all six bytes makes a payload chunk that coincidentally looks like a
+        reply start practically impossible.
+        """
         return (
             BMS._ADDR.to_bytes(1)
             + BMS._FCT_READ.to_bytes(1)
-            + self._exp_block.to_bytes(2, "big")
+            + self._exp_block[0].to_bytes(2, "big")
+            + self._exp_block[1].to_bytes(2, "big")
         )
 
     async def _await_block(self, block: tuple[int, int]) -> bytes:
         """Request a register block and return its payload."""
-        self._exp_block = block[0]
+        self._exp_block = block
         self._frame.clear()  # never let a stale partial reply block this request
         try:
             await self._await_msg(BMS._cmd(block))
         finally:
-            self._exp_block = 0x0000
+            self._exp_block = (0x0000, 0x0000)
         return self._msg[BMS._HEAD_LEN : -BMS._CRC_LEN]
 
     async def _fetch_device_info(self) -> BMSInfo:

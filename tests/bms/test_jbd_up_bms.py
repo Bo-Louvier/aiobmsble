@@ -324,7 +324,8 @@ async def test_stale_partial_frame(patch_bleak_client, patch_bms_timeout) -> Non
 
 async def test_payload_looks_like_frame_start(patch_bleak_client) -> None:
     """Test that a payload chunk starting with the reply header does not drop the reply."""
-    # design/rated capacity words equal to the expected header, right at a chunk boundary
+    # design/rated capacity words equal to address, function code and start address,
+    # right at a chunk boundary; only the end address echo does not match
     payload: Final[bytearray] = bytearray(_STATUS_RSP[8:-2])
     payload[12:16] = b"\x01\x78\x10\x00"
     assert BT_FRAME_SIZE == 20  # chunk 2 starts at payload offset 12
@@ -344,11 +345,19 @@ async def test_payload_looks_like_frame_start(patch_bleak_client) -> None:
     await bms.disconnect()
 
 
-@pytest.mark.parametrize("partial_len", [7, 20], ids=["below_header", "with_header"])
+@pytest.mark.parametrize(
+    "partial_len",
+    [7, 20, len(_STATUS_RSP) - 8],
+    ids=["below_header", "with_header", "missing_last_chunk"],
+)
 async def test_partial_first_attempt(
     patch_bleak_client, patch_bms_timeout, partial_len: int
 ) -> None:
-    """Test that a reply cut short on the first attempt does not block the retries."""
+    """Test that a reply cut short on the first attempt is completed by the first retry.
+
+    Losing the last notification of a reply is what happens in the field; the retry
+    must then succeed right away instead of being glued onto the stale partial reply.
+    """
     patch_bms_timeout("jbd_up_bms")
 
     class MockPartialFirstClient(MockJBDUPBleakClient):
@@ -370,18 +379,19 @@ async def test_partial_first_attempt(
 
     bms = BMS(generate_ble_device())
     assert await bms.async_update() == _RESULT_DEFS
-    assert MockPartialFirstClient._requests > 1
+    assert MockPartialFirstClient._requests == 2
     await bms.disconnect()
 
 
 async def test_buffer_overflow_recovery(patch_bleak_client, patch_bms_timeout) -> None:
-    """Test that a reply filling the buffer after a stale partial cannot overflow it."""
+    """Test that a reply delivering more bytes than the buffer holds cannot overflow it."""
     patch_bms_timeout("jbd_up_bms")
-    # largest reply the buffer can hold; a stale header in front of it would overflow
+    # largest reply the buffer can hold; the first attempt announces it but keeps
+    # streaming past the buffer size without ever completing the frame
     big: Final[bytes] = _frame(bytes(1014))
 
     class MockOverflowClient(MockJBDUPBleakClient):
-        """Emulate a BMS that first sends only a header, then a buffer sized reply."""
+        """Emulate a BMS that first overruns its announced length, then replies properly."""
 
         RESP: dict[int, bytes] = {BMS._STATUS[0]: big}
         _requests: int = 0
@@ -393,7 +403,11 @@ async def test_buffer_overflow_recovery(patch_bleak_client, patch_bms_timeout) -
         ) -> bytes:
             resp: Final[bytes] = super()._response(char_specifier, data)
             MockOverflowClient._requests += 1
-            return resp[: BMS._HEAD_LEN] if MockOverflowClient._requests == 1 else resp
+            return (
+                resp[: BMS._HEAD_LEN] + bytes(len(big) + BT_FRAME_SIZE)
+                if MockOverflowClient._requests == 1
+                else resp
+            )
 
     patch_bleak_client(MockOverflowClient)
 
